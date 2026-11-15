@@ -650,8 +650,8 @@ public class MainActivity extends Activity {
             ci = Math.max(0, Math.min(n - 2, ci));
             double seg = T[ci + 1] - T[ci];
             float f = seg > 0 ? cl((float) ((ct - T[ci]) / seg), 0f, 1f) : 0f;
-            float curX = X[ci] + (X[ci + 1] - X[ci]) * f;
-            float curY = Y[ci] + (Y[ci + 1] - Y[ci]) * f;
+            float curX = MainActivity.this.X[ci] + (MainActivity.this.X[ci + 1] - MainActivity.this.X[ci]) * f;
+            float curY = MainActivity.this.Y[ci] + (MainActivity.this.Y[ci + 1] - MainActivity.this.Y[ci]) * f;
             float curA = A[ci] + (A[ci + 1] - A[ci]) * f;
             int si = f < .5f ? ci : ci + 1;
 
@@ -737,10 +737,10 @@ public class MainActivity extends Activity {
                 gz = new float[n];
             }
             for (int i = 0; i < n; i++) {
-                tz[i] = pj(X[i], Y[i], A[i] * ex);
+                tz[i] = pj(MainActivity.this.X[i], MainActivity.this.Y[i], A[i] * ex);
                 tsx[i] = psx;
                 tsy[i] = psy;
-                gz[i] = pj(X[i], Y[i], terrainAt(X[i], Y[i]) * ex + 2f);
+                gz[i] = pj(MainActivity.this.X[i], MainActivity.this.Y[i], terrainAt(MainActivity.this.X[i], MainActivity.this.Y[i]) * ex + 2f);
                 gsx[i] = psx;
                 gsy[i] = psy;
             }
@@ -825,3 +825,4 @@ public class MainActivity extends Activity {
         }
     }
 }
+
