@@ -57,6 +57,7 @@ header{display:flex;align-items:center;gap:8px;padding:8px 10px;height:54px;flex
     </div>
     <div id="msg"></div>
     <div id="mapbtns">
+      <button class="fab sec" id="bDist">Abstand 600 m</button>
       <button class="fab sec" id="bEx">Relief ×1.4</button>
       <button class="fab" id="bFollow">Frei</button>
     </div>
@@ -133,6 +134,8 @@ var n=0,T=null,LA=null,LO=null,AL=null,SP=null,VA=null,CUM=null,HD=null,total=0,
 var t=0,playing=false,follow=false,bear=0,userSeek=false,lastIdx=0;
 var liveOn=false,LP=[],liveDist=0,liveMax=0;
 var show={a:true,s:true,v:true};
+var ORG=[0,0],FD=[[250,90],[600,200],[1500,500],[4000,1500]],fdi=1;
+var G3={on:false,tried:false,k:-1,lastI:0,R:0,P3:null,cols:null,RAD:6};
 
 /* ---------- Parser ---------- */
 function parseIgc(s){
@@ -203,6 +206,165 @@ function vcol(v){
   if(v<-2)return '#3b82f6'; if(v<-0.5)return '#22d3ee'; if(v<0.5)return '#facc15'; if(v<2)return '#fb923c'; return '#ef4444';
 }
 
+
+/* ---------- 3D-Spur in echter Höhe ---------- */
+function tubeData(P3,cols,m,R,RAD){
+  var pos=new Float32Array(m*RAD*3),col=new Float32Array(m*RAD*3),idx=[],k,j;
+  for(k=0;k<m;k++){
+    var a=Math.max(0,k-1),b=Math.min(m-1,k+1);
+    var tx=P3[b*3]-P3[a*3],ty=P3[b*3+1]-P3[a*3+1],tz=P3[b*3+2]-P3[a*3+2];
+    var tl=Math.hypot(tx,ty,tz)||1;tx/=tl;ty/=tl;tz/=tl;
+    var nx=ty,ny=-tx,nl=Math.hypot(nx,ny);
+    if(nl<1e-4){nx=1;ny=0;nl=1;}
+    nx/=nl;ny/=nl;
+    var bx=-tz*ny,by=tz*nx,bz=tx*ny-ty*nx;
+    var c=cols[k];
+    for(j=0;j<RAD;j++){
+      var ang=j/RAD*2*Math.PI,ca=Math.cos(ang)*R,sa=Math.sin(ang)*R,o=(k*RAD+j)*3;
+      pos[o]=P3[k*3]+nx*ca+bx*sa;pos[o+1]=P3[k*3+1]+ny*ca+by*sa;pos[o+2]=P3[k*3+2]+bz*sa;
+      col[o]=c[0];col[o+1]=c[1];col[o+2]=c[2];
+    }
+  }
+  for(k=0;k<m-1;k++)for(j=0;j<RAD;j++){
+    var j2=(j+1)%RAD,a0=k*RAD+j,a1=k*RAD+j2,b0=(k+1)*RAD+j,b1=(k+1)*RAD+j2;
+    idx.push(a0,b0,a1,a1,b0,b1);
+  }
+  return {pos:pos,col:col,idx:idx};
+}
+function curtainData(P3,cols,m,depth){
+  var pos=new Float32Array(m*2*3),col=new Float32Array(m*2*4),idx=[],k;
+  for(k=0;k<m;k++){
+    pos[k*6]=P3[k*3];pos[k*6+1]=P3[k*3+1];pos[k*6+2]=P3[k*3+2];
+    pos[k*6+3]=P3[k*3];pos[k*6+4]=P3[k*3+1];pos[k*6+5]=P3[k*3+2]-depth;
+    var c=cols[k];
+    col[k*8]=c[0];col[k*8+1]=c[1];col[k*8+2]=c[2];col[k*8+3]=0.5;
+    col[k*8+4]=c[0];col[k*8+5]=c[1];col[k*8+6]=c[2];col[k*8+7]=0;
+  }
+  for(k=0;k<m-1;k++)idx.push(2*k,2*k+1,2*k+2,2*k+1,2*k+3,2*k+2);
+  return {pos:pos,col:col,idx:idx};
+}
+function hex2rgb(s){return [parseInt(s.substr(1,2),16)/255,parseInt(s.substr(3,2),16)/255,parseInt(s.substr(5,2),16)/255];}
+function mpp(lat){return 156543.03392*Math.cos(lat*Math.PI/180)/Math.pow(2,map.getZoom());}
+function wantR(lat){
+  if(follow)return Math.max(3,0.006*Math.hypot(FD[fdi][0],FD[fdi][1]));
+  return Math.max(5,2.5*mpp(lat));
+}
+function mkGeom(d,cs){
+  var g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.BufferAttribute(d.pos,3));
+  g.setAttribute('color',new THREE.BufferAttribute(d.col,cs));
+  g.setIndex(d.idx);
+  return g;
+}
+function ensureTube(force){
+  if(!G3.on||!G3.P3)return;
+  var R=wantR(ORG[1]);
+  if(!force&&G3.R&&R/G3.R<1.35&&R/G3.R>0.74)return;
+  G3.R=R;
+  var m=SEGIDX.length,d=tubeData(G3.P3,G3.cols,m,R,G3.RAD);
+  var g1=mkGeom(d,3),g2=new THREE.BufferGeometry();
+  g2.setAttribute('position',g1.getAttribute('position'));g2.setIndex(g1.getIndex());
+  if(G3.flown.geometry)G3.flown.geometry.dispose();
+  if(G3.future.geometry)G3.future.geometry.dispose();
+  G3.flown.geometry=g1;G3.future.geometry=g2;
+  G3.k=-1;set3D(G3.lastI,null);
+}
+function build3D(){
+  if(!G3.on||n<2)return;
+  var m=SEGIDX.length,cl=Math.cos(ORG[1]*Math.PI/180),k;
+  var P3=new Float32Array(m*3),cols=[];
+  for(k=0;k<m;k++){
+    var q=SEGIDX[k];
+    P3[k*3]=(LO[q]-ORG[0])*111320*cl;P3[k*3+1]=(LA[q]-ORG[1])*110540;P3[k*3+2]=AL[q];
+    cols.push(hex2rgb(vcol(VA[q])));
+  }
+  G3.P3=P3;G3.cols=cols;
+  if(G3.curtain.geometry)G3.curtain.geometry.dispose();
+  G3.curtain.geometry=mkGeom(curtainData(P3,cols,m,200),4);
+  G3.group.scale.z=EX[ei];G3.group.visible=true;G3.pil.visible=true;
+  ensureTube(true);
+}
+function segAt(i){
+  var lo=0,hi=SEGIDX.length-1;
+  while(lo<hi){var mid=(lo+hi+1)>>1;if(SEGIDX[mid]<=i)lo=mid;else hi=mid-1;}
+  return lo;
+}
+function set3D(i,pos){
+  if(!G3.on||!G3.P3)return;
+  G3.lastI=i;
+  var m=SEGIDX.length,per=G3.RAD*6,k=segAt(i);
+  if(k!==G3.k){
+    G3.k=k;
+    G3.flown.geometry.setDrawRange(0,k*per);
+    G3.future.geometry.setDrawRange(k*per,Math.max(0,(m-1-k)*per));
+    G3.curtain.geometry.setDrawRange(0,k*6);
+  }
+  if(pos){
+    var cl=Math.cos(ORG[1]*Math.PI/180);
+    G3.pil.position.set((pos[0]-ORG[0])*111320*cl,(pos[1]-ORG[1])*110540,pos[2]*EX[ei]);
+    var rs=follow?Math.max(5,0.011*Math.hypot(FD[fdi][0],FD[fdi][1])):Math.max(8,10*mpp(pos[1]));
+    G3.pil.scale.set(rs,rs,rs);
+  }
+}
+function followCam(lng,lat,alt,brg){
+  var D=FD[fdi][0],H=FD[fdi][1],rad=brg*Math.PI/180;
+  var dLat=-Math.cos(rad)*D/110540,dLon=-Math.sin(rad)*D/(111320*Math.cos(lat*Math.PI/180));
+  var cam=map.getFreeCameraOptions();
+  cam.position=maplibregl.MercatorCoordinate.fromLngLat([lng+dLon,lat+dLat],alt*EX[ei]+H);
+  cam.setPitchBearing(Math.atan2(D,H)*180/Math.PI,brg);
+  map.setFreeCameraOptions(cam);
+}
+var customLayer={
+  id:'trail3d',type:'custom',renderingMode:'3d',
+  onAdd:function(m,gl){
+    G3.scene=new THREE.Scene();G3.camera=new THREE.Camera();
+    G3.renderer=new THREE.WebGLRenderer({canvas:m.getCanvas(),context:gl,antialias:true});
+    G3.renderer.autoClear=false;
+    var dbl=THREE.DoubleSide;
+    G3.future=new THREE.Mesh(new THREE.BufferGeometry(),new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:0.3,side:dbl,depthWrite:false}));
+    G3.flown=new THREE.Mesh(new THREE.BufferGeometry(),new THREE.MeshBasicMaterial({vertexColors:true,side:dbl}));
+    G3.curtain=new THREE.Mesh(new THREE.BufferGeometry(),new THREE.MeshBasicMaterial({vertexColors:true,transparent:true,side:dbl,depthWrite:false}));
+    G3.future.renderOrder=1;G3.curtain.renderOrder=2;G3.flown.renderOrder=3;
+    G3.future.frustumCulled=G3.flown.frustumCulled=G3.curtain.frustumCulled=false;
+    G3.group=new THREE.Group();G3.group.add(G3.future);G3.group.add(G3.curtain);G3.group.add(G3.flown);
+    G3.pil=new THREE.Group();
+    var sg=new THREE.SphereGeometry(1,16,12);
+    var s1=new THREE.Mesh(sg,new THREE.MeshBasicMaterial({color:0x3556b8}));
+    var s2=new THREE.Mesh(sg,new THREE.MeshBasicMaterial({color:0xffffff,side:THREE.BackSide}));
+    s2.scale.set(1.35,1.35,1.35);s1.renderOrder=5;s2.renderOrder=4;
+    s1.frustumCulled=false;s2.frustumCulled=false;
+    G3.pil.add(s2);G3.pil.add(s1);G3.pil.visible=false;
+    G3.scene.add(G3.group);G3.scene.add(G3.pil);
+  },
+  render:function(gl,matrix){
+    var o=ORGM(),s=o.meterInMercatorCoordinateUnits();
+    var m=new THREE.Matrix4().fromArray(matrix);
+    var l=new THREE.Matrix4().makeTranslation(o.x,o.y,o.z).scale(new THREE.Vector3(s,-s,s));
+    G3.camera.projectionMatrix=m.multiply(l);
+    if(G3.renderer.resetState)G3.renderer.resetState();else G3.renderer.state.reset();
+    G3.renderer.render(G3.scene,G3.camera);
+  }
+};
+function ORGM(){return maplibregl.MercatorCoordinate.fromLngLat([ORG[0],ORG[1]],0);}
+function try3D(){
+  if(G3.tried||!ready||!window.THREE)return;
+  G3.tried=true;
+  try{
+    map.addLayer(customLayer,'pl1');
+    G3.on=true;
+    map.setLayoutProperty('seg','visibility','none');
+    if(marker)marker.getElement().style.display='none';
+    if(n>1){build3D();update();}
+  }catch(e){G3.on=false;msg('3D-Spur nicht verfügbar: '+e.message,7000);}
+}
+function loadThree(urls,k){
+  if(k>=urls.length)return;
+  var sc=document.createElement('script');sc.src=urls[k];
+  sc.onload=function(){try3D();};
+  sc.onerror=function(){loadThree(urls,k+1);};
+  document.head.appendChild(sc);
+}
+
 /* ---------- Track anwenden ---------- */
 function applyTrack(o,title){
   liveOn=false;setRecUi(false);
@@ -222,10 +384,13 @@ function applyTrack(o,title){
   map.setFilter('seg',['<=',['get','i'],-1]);
   var mnLo=180,mxLo=-180,mnLa=90,mxLa=-90;
   for(i=0;i<n;i++){mnLo=Math.min(mnLo,LO[i]);mxLo=Math.max(mxLo,LO[i]);mnLa=Math.min(mnLa,LA[i]);mxLa=Math.max(mxLa,LA[i]);}
+  ORG=[(mnLo+mxLo)/2,(mnLa+mxLa)/2];
   t=0;playing=false;follow=false;lastIdx=0;filtIdx=-2;bear=HD[0];
   $('bPlay').textContent='▶';$('bFollow').textContent='Frei';$('title').textContent=title;
   if(!marker){var el=document.createElement('div');el.className='pilot';marker=new maplibregl.Marker({element:el}).setLngLat([LO[0],LA[0]]).addTo(map);}
   marker.setLngLat([LO[0],LA[0]]);
+  if(G3.on){marker.getElement().style.display='none';map.setLayoutProperty('seg','visibility','none');build3D();}
+  else marker.getElement().style.display='block';
   map.fitBounds([[mnLo,mnLa],[mxLo,mxLa]],{padding:{top:110,bottom:40,left:30,right:30},pitch:55,bearing:0,maxZoom:15,duration:1200});
   drawChart();update();
   msg(Math.round(T[n-1]/60)+' min · '+CUM[n-1].toFixed(1)+' km geladen',2500);
@@ -272,14 +437,16 @@ function update(){
   $('tl').textContent=fmt(t)+' / '+fmt(total);
   if(!userSeek)$('seek').value=Math.round(t/total*1000);
   $('cur').style.left=(t/total*$('cwrap').clientWidth)+'px';
-  if(marker)marker.setLngLat([lng,lat]);
+  if(G3.on)set3D(i,[lng,lat,alt]);
+  else if(marker)marker.setLngLat([lng,lat]);
   if(i!==filtIdx&&!filtTimer){
     if(Date.now()-filtLast>140)applyFilt();else filtTimer=setTimeout(applyFilt,150);
   }
   if(follow){
     bear+=angDiff(HD[i],bear)*0.08;
-    map.jumpTo({center:[lng,lat],bearing:bear});
+    if(G3.on)followCam(lng,lat,alt,bear);else map.jumpTo({center:[lng,lat],bearing:bear});
   }
+  if(G3.on)map.triggerRepaint();
 }
 var lastTs=0;
 function frame(ts){
@@ -351,12 +518,18 @@ function bind(){
     follow=!follow;$('bFollow').textContent=follow?'Folgen':'Frei';
     if(follow){
       bear=HD[lastIdx];
-      map.easeTo({center:[LO[lastIdx],LA[lastIdx]],bearing:bear,pitch:68,zoom:14.3,duration:800});
-    }
+      if(G3.on){ensureTube(true);update();}
+      else map.easeTo({center:[LO[lastIdx],LA[lastIdx]],bearing:bear,pitch:68,zoom:14.3,duration:800});
+    }else if(G3.on)ensureTube(true);
   });
   $('bEx').addEventListener('click',function(){
     ei=(ei+1)%EX.length;$('bEx').textContent='Relief ×'+EX[ei];
     if(ready)map.setTerrain({source:'dem',exaggeration:EX[ei]});
+    if(G3.on&&G3.group){G3.group.scale.z=EX[ei];update();}
+  });
+  $('bDist').addEventListener('click',function(){
+    fdi=(fdi+1)%FD.length;$('bDist').textContent='Abstand '+FD[fdi][0]+' m';
+    if(G3.on&&follow){ensureTube(true);update();}
   });
   function tog(id,k){$(id).addEventListener('click',function(){show[k]=!show[k];this.classList.toggle('on',show[k]);drawChart();});}
   tog('lgA','a');tog('lgS','s');tog('lgV','v');
@@ -386,6 +559,7 @@ window.FT={
       ['hAlt','hVar','hSpd','hTime','hDist'].forEach(function(k){$(k).textContent='–';});
       if(ready){map.getSource('full').setData(EMPTY);map.getSource('seg').setData(EMPTY);}
       if(marker)marker.getElement().style.display='none';
+      if(G3.on&&G3.group){G3.group.visible=false;G3.pil.visible=false;map.triggerRepaint();}
       msg('Warte auf GPS-Signal…');
     }else{liveOn=false;setRecUi(false);}
   },
@@ -416,8 +590,10 @@ function initMap(){
   map.on('load',function(){
     map.setTerrain({source:'dem',exaggeration:EX[ei]});
     ready=true;
+    try3D();
     if(pending){var p=pending;pending=null;loadText(p);}
   });
+  map.on('zoomend',function(){if(G3.on&&!follow)ensureTube(false);});
   map.on('dragstart',function(e){if(follow&&e.originalEvent){follow=false;$('bFollow').textContent='Frei';}});
   map.on('rotatestart',function(e){if(follow&&e.originalEvent){follow=false;$('bFollow').textContent='Frei';}});
 }
@@ -436,6 +612,7 @@ function loadLib(bases,k){
 if(typeof document!=='undefined'){
   bind();
   requestAnimationFrame(frame);
+  loadThree(['https://cdn.jsdelivr.net/npm/three@0.149.0/build/three.min.js','https://unpkg.com/three@0.149.0/build/three.min.js'],0);
   loadLib(['https://unpkg.com/maplibre-gl@4.7.1/dist/','https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/'],0);
 }
 })();
